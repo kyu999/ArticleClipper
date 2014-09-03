@@ -21,13 +21,23 @@ class BoilerTest(object):
         return urls
     
     def fetch_info(self):
+        """
+        boilerpipeの本文抽出は余計な部分まで取得することは少ないけれど、本来より少ないことは多々ある
+        """
         urls = self.get_urls()
-        texts = []
-        whole_contents = []
+        got_infos = []
         for url in urls:
             extractor = Extractor(extractor='ArticleExtractor', url=url)
-            texts.append(extractor.getText())
-            whole_contents.append(requests.get(url).content)
+            text = extractor.getText()
+            content = requests.get(url).content
+            got_infos.append([url, text, content])
 
-        return urls, whole_contents, texts
+        return got_infos
+    
+    def show_got_info(self):
+        data = self.fetch_info()
+        for each in data:
+            print "-----------------"
+            print each[0]
+            print each[1]
     
