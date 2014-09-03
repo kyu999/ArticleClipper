@@ -17,10 +17,6 @@ class Extraction(object):
         self.top_dom = lxml.html.fromstring(whole_html)
         self.host = furl(url).host
         self.needless_tags = needless_tags
-
-        self.only_tag_pattern = re.compile(u'^[\t]+$')
-        # hostを省略したurl指定(e.g. /photo/archives/....)の場合にホストを追加してあげる
-        self.omit_host_pattern = re.compile(u"^[/]")
         
     def is_img(self, node):
         tag = node.tag
@@ -54,10 +50,10 @@ class Extraction(object):
             return (None, None)
         
         half_len_text = len(self.estimated_text)/2
-        return (self.estimated_text[0:half_len_text],
-                self.estimated_text[half_len_text:-1])
+        return (self.estimated_text[0: half_len_text],
+                self.estimated_text[half_len_text: -1])
         
-    def matched_rate(self, this, that):
+    def get_match_rate(self, this, that):
         """
         ２つの文字列の一致具合を返す
         """
@@ -68,6 +64,9 @@ class Extraction(object):
         return matcher.size / float(that_len)
     
     def get_text(self, node):
+        """
+        nodeからテキストを取得
+        """
         try:
             text = node.text_content()
         except Exception as e:
@@ -76,15 +75,13 @@ class Extraction(object):
             text = node.text
         return text
     
-    def get_front_and_behind_dom(self):
+    def find_most_matched_node(self, sentence):
         """
-        本文の最初と最後のdomを取得
+        sentenceが最も含まれる割合が高いdomを取得
         """
-        head_sentence, tail_sentence = self.get_front_and_behind_text()
-        len_head, len_tail = len(head_sentence), len(tail_sentence)
-        # head, tailそれぞれとの一致具合の最高値
-        max_matched_head, max_matched_tail = 0, 0
-        head_node, tail_node = None, None
+        len_sentence = len(sentence)
+        max_matched_rate = 0
+        matched_node = None
 
         for node in self.top_dom.iter():
             
@@ -94,25 +91,31 @@ class Extraction(object):
                 continue
                 
             len_text = len(text)
-            head_match_rate = self.matched_rate(head_sentence, text)
-            tail_match_rate = self.matched_rate(tail_sentence, text)
+            this_match_rate = self.get_match_rate(sentence, text)
 
-            if head_match_rate > max_matched_head and len_text >= len_head:
-                head_node = node
-                max_matched_head = head_match_rate
-            
-            if tail_match_rate > max_matched_tail and len_text >= len_tail:
-                tail_node = node
-                max_matched_tail = tail_match_rate
-                
-        return (head_node, tail_node)                
+            if this_match_rate > max_matched_rate and len_text >= len_sentence:
+                matched_node = node
+                max_matched_rate = this_match_rate
+                            
+        return matched_node                        
+    
+    def get_front_and_behind_dom(self):
+        """
+        本文の前半分と後ろ半分の含まれる割合が最も高いdomを取得
+        """
+        front_sentence, behind_sentence = self.get_front_and_behind_text()
+        
+        front_dom = self.find_most_matched_node(front_sentence)
+        behind_dom = self.find_most_matched_node(behind_sentence)
+        
+        return (front_dom, behind_dom)                
 
     def get_container_dom(self, head_dom, tail_dom):
         """
-        head_domとtail_domからそれらを内包する最小のdomを取得
+        front_domとbehind_domを内包する最小の親domを取得
         """
         head_parents, tail_parents = set([head_dom]), set([tail_dom])
-        same_parent_dom = None
+        same_parent_doms = None
 
         # head, tailそれぞれの親たちの中で一致するものを捜索
         while head_dom is not None or tail_dom is not None:
@@ -123,40 +126,36 @@ class Extraction(object):
             if tail_dom is not None:
                 tail_dom =tail_dom.getparent()
                 tail_parents.add(tail_dom)
-            same_parent_dom = head_parents.intersection(tail_parents)
-            
-            if len(same_parent_dom):
-                break
                 
-        if not same_parent_dom:
-            return None
-        
-        same_parent_dom = same_parent_dom.pop()
-        
-        return same_parent_dom
+            same_parent_doms = head_parents.intersection(tail_parents)
+            
+            if same_parent_doms is not None:
+                same_parent_dom = same_parent_doms.pop()
+                return same_parent_dom
+                
+        return None
     
+    # ここが本当に必要なのか確認する必要あり
     def clean_dom(self, head_dom, tail_dom, estimated_dom):
         """
         推定されたdomの中からscriptや広告部分を除去
         """
-        found_tail = False
         
         if not estimated_dom:
             return None
         
         for child in estimated_dom.iterchildren():
-            if found_tail:
-                estimated_dom.remove(child)
             if self.is_invalid_tag(child):
                 estimated_dom.remove(child)
-            if child == tail_dom:
-                found_tail = True
             if child.getchildren() is not None:
                 self.clean_dom(head_dom, tail_dom, child)
                 
         return estimated_dom
     
     def clean_text(self, dom):
+        """
+        textから不必要なスクリプト部分等を削除する
+        """
         whole_text = self.get_text(dom)
         
         for node in dom.iter():
@@ -171,23 +170,30 @@ class Extraction(object):
         """
         本文を内包する最小のdomを返す
         """
-        head_dom, tail_dom = self.get_front_and_behind_dom()
-        estimated_dom = self.get_container_dom(head_dom, tail_dom)
-        cleaned_dom = self.clean_dom(head_dom, tail_dom, estimated_dom)
-        return cleaned_dom
+        front_dom, behind_dom = self.get_front_and_behind_dom()
+        main_dom = self.get_container_dom(front_dom, behind_dom)
+        return self.clean_dom(front_dom, behind_dom, main_dom)
     
-    # ここ綺麗にしたい
     def is_only_tab_space_empty(self, paragraph):
-        removed = paragraph.replace("\r", "").replace("\n", "").replace("\t", "").replace(" ", "")
-        return len(removed) == 0    
+        """
+        改行、タブ、空行文字のみかどうかを判定
+        """
+        gabarge_pattern = re.compile(u'^[\t\r\n]+$')
+        return gabarge_pattern.match(paragraph) is not None
         
     def generate_formatted_content(self):
+        """
+        domではなく整形した形で本文を返す
+        """
         main_dom = self.extract_main_dom()
         whole_text = self.clean_text(main_dom)
         
         if not main_dom:
             return None
                 
+        # hostを省略したurl指定(e.g. /photo/archives/....)の場合にホストを追加してあげる
+        self.omit_host_pattern = re.compile(u"^[/]")
+        
         article = []
             
         for node in main_dom.iter():
