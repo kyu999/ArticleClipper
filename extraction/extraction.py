@@ -53,15 +53,16 @@ class Extraction(object):
         return (self.estimated_text[0: half_len_text],
                 self.estimated_text[half_len_text: -1])
         
-    def get_match_rate(self, this, that):
+    # minimum_lenに関してはサンプルを用意してそこから学習させるのもいいかもしれない。    
+    def get_match_rate(self, sentence, text, minimun_len = 10):
         """
         ２つの文字列の一致具合を返す
         """
-        that_len = len(that)
-        matcher = SequenceMatcher(None, this, that).find_longest_match(0, len(this), 0, that_len)
-        if that_len <= 0:
+        text_len = len(text)
+        if text_len < minimun_len:
             return 0
-        return matcher.size / float(that_len)
+        lcs = SequenceMatcher(None, sentence, text).find_longest_match(0, len(sentence), 0, text_len)
+        return lcs.size * (len(sentence) / float(text_len))
     
     def get_text(self, node):
         """
@@ -70,7 +71,7 @@ class Extraction(object):
         try:
             text = node.text_content()
         except Exception as e:
-            if not node:
+            if node is None:
                 return None
             text = node.text
         return text
@@ -92,7 +93,8 @@ class Extraction(object):
                 
             len_text = len(text)
             this_match_rate = self.get_match_rate(sentence, text)
-
+            
+            # len_textとlen_sentenceの関係について確かめる必要あり
             if this_match_rate > max_matched_rate and len_text >= len_sentence:
                 matched_node = node
                 max_matched_rate = this_match_rate
@@ -110,45 +112,43 @@ class Extraction(object):
         
         return (front_dom, behind_dom)                
 
-    def get_container_dom(self, head_dom, tail_dom):
+    def find_same_parent(self, front_dom, behind_dom):
         """
         front_domとbehind_domを内包する最小の親domを取得
         """
-        head_parents, tail_parents = set([head_dom]), set([tail_dom])
-        same_parent_doms = None
+        front_parents, behind_parents = set([front_dom]), set([behind_dom])
 
-        # head, tailそれぞれの親たちの中で一致するものを捜索
-        while head_dom is not None or tail_dom is not None:
+        # front, behindそれぞれの親たちの中で一致するものを捜索
+        while front_dom is not None or behind_dom is not None:
             # ２つのnodeの親nodeを取得
-            if head_dom is not None:
-                head_dom = head_dom.getparent()
-                head_parents.add(head_dom)
-            if tail_dom is not None:
-                tail_dom =tail_dom.getparent()
-                tail_parents.add(tail_dom)
+            if front_dom is not None:
+                front_dom = front_dom.getparent()
+                front_parents.add(front_dom)
+            if behind_dom is not None:
+                behind_dom =behind_dom.getparent()
+                behind_parents.add(behind_dom)
                 
-            same_parent_doms = head_parents.intersection(tail_parents)
-            
-            if same_parent_doms is not None:
+            same_parent_doms = front_parents.intersection(behind_parents)
+                        
+            if len(same_parent_doms) > 0:
                 same_parent_dom = same_parent_doms.pop()
                 return same_parent_dom
                 
         return None
     
-    # ここが本当に必要なのか確認する必要あり
-    def clean_dom(self, head_dom, tail_dom, estimated_dom):
+    def clean_dom(self, estimated_dom):
         """
         推定されたdomの中からscriptや広告部分を除去
         """
         
-        if not estimated_dom:
+        if estimated_dom is None:
             return None
         
         for child in estimated_dom.iterchildren():
             if self.is_invalid_tag(child):
                 estimated_dom.remove(child)
             if child.getchildren() is not None:
-                self.clean_dom(head_dom, tail_dom, child)
+                self.clean_dom(child)
                 
         return estimated_dom
     
@@ -171,15 +171,21 @@ class Extraction(object):
         本文を内包する最小のdomを返す
         """
         front_dom, behind_dom = self.get_front_and_behind_dom()
-        main_dom = self.get_container_dom(front_dom, behind_dom)
-        return self.clean_dom(front_dom, behind_dom, main_dom)
+        parent_dom = self.find_same_parent(front_dom, behind_dom)
+        return self.clean_dom(parent_dom)
+    
+    def extract_main_content(self):
+        """
+        boilerpipeより精度の高い本文抽出
+        """
+        return self.extract_main_dom().text_content()
     
     def is_only_tab_space_empty(self, paragraph):
         """
         改行、タブ、空行文字のみかどうかを判定
         """
-        gabarge_pattern = re.compile(u'^[\t\r\n]+$')
-        return gabarge_pattern.match(paragraph) is not None
+        garbage_pattern = re.compile(u'^[\t\r\n]+$')
+        return garbage_pattern.match(paragraph) is not None
         
     def generate_formatted_content(self):
         """
