@@ -95,7 +95,7 @@ class Extraction(object):
             this_match_rate = self.get_match_rate(sentence, text)
             
             # len_textとlen_sentenceの関係について確かめる必要あり
-            if this_match_rate > max_matched_rate and len_text >= len_sentence:
+            if this_match_rate > max_matched_rate:
                 matched_node = node
                 max_matched_rate = this_match_rate
                             
