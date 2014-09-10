@@ -8,31 +8,36 @@ from boilerpipe.extract import Extractor
 import requests
 
 class Extraction(object):
+    """
+    内部で使っているboilerpipeは余計なものを摘出することは少ないが、本来の本文よりも小さく摘出する傾向にあるので
+    それを踏まえて精度を高めた本文抽出を行っている。また、本文だけではなくてdomも取得できるようになっている
+    もちろんただbodyタグでくくったような形ではなくて本来のdomである。
+    """
     
-    def __init__(self, url, needless_tags = ["script", "noscript", "noscript"]):
+    def __init__(self, url, needless_tags = ["script", "style", "noscript"]):
         whole_html = requests.get(url).content
-        extractor = Extractor(extractor='ArticleExtractor', url=url)
-        
-        self.estimated_text = extractor.getText()
+        self.url = url
         self.top_dom = lxml.html.fromstring(whole_html)
-        self.host = furl(url).host
         self.needless_tags = needless_tags
         
     def is_img(self, node):
-        tag = node.tag
-        return tag == "img"
+        """
+        image要素かどうか判断
+        """
+        return node.tag == "img"
     
     def is_subtitle(self, node):
-        tag = node.tag
+        """
+        見出し要素かどうか判断
+        """
         subtitle_tags = ["h1", "h2", "h3", "h4", "h5"]
-        return tag in subtitle_tags
+        return node.tag in subtitle_tags
     
     def is_invalid_tag(self, node):
         """
         必要のないタグかどうか判断
         """
-        tag = node.tag
-        return tag in self.needless_tags
+        return node.tag in self.needless_tags
      
     def split_by_newline(self, text):
         """
@@ -44,8 +49,10 @@ class Extraction(object):
             
     def get_front_and_behind_text(self):
         """
-        摘出した本文の前半分と後ろ半分を取得
+        推定の本文の前半分と後ろ半分を取得
         """
+        estimated_text = Extractor(extractor='ArticleExtractor', url=self.url).getText()
+
         if not self.estimated_text:
             return (None, None)
         
@@ -57,11 +64,13 @@ class Extraction(object):
     def get_match_rate(self, sentence, text, minimun_len = 10):
         """
         ２つの文字列の一致具合を返す
+        sentenceは推定本文の一部、textは検証対象文字列。textはnodeごとに異なる
         """
         text_len = len(text)
         if text_len < minimun_len:
             return 0
         lcs = SequenceMatcher(None, sentence, text).find_longest_match(0, len(sentence), 0, text_len)
+        
         return lcs.size * (len(sentence) / float(text_len))
     
     def get_text(self, node):
@@ -178,7 +187,7 @@ class Extraction(object):
         """
         boilerpipeより精度の高い本文抽出
         """
-        return self.extract_main_dom().text_content()
+        return self.clean_text(self.extract_main_dom())
     
     def is_only_tab_space_empty(self, paragraph):
         """
@@ -186,43 +195,3 @@ class Extraction(object):
         """
         garbage_pattern = re.compile(u'^[\t\r\n]+$')
         return garbage_pattern.match(paragraph) is not None
-        
-    def generate_formatted_content(self):
-        """
-        domではなく整形した形で本文を返す
-        """
-        main_dom = self.extract_main_dom()
-        whole_text = self.clean_text(main_dom)
-        
-        if not main_dom:
-            return None
-                
-        # hostを省略したurl指定(e.g. /photo/archives/....)の場合にホストを追加してあげる
-        self.omit_host_pattern = re.compile(u"^[/]")
-        
-        article = []
-            
-        for node in main_dom.iter():
-            text = node.text
-            if self.is_img(node):
-                src = node.get("src")
-                if self.omit_host_pattern.match(src):
-                    src = self.host + src
-                article.append({'type': "image", 'src': src})
-                continue
-                
-            if self.is_subtitle(node):
-                article.append({'type': "subtitle", 'text': text})
-                continue
-
-            if not text:
-                continue
-                
-            paragraphs = text.split("\n")
-            
-            for paragraph in paragraphs:
-                if not paragraph or self.is_only_tab_space_empty(paragraph):
-                    continue
-                article.append({'type': "paragraph", 'text': paragraph.strip("\t")})
-            
-        return article
